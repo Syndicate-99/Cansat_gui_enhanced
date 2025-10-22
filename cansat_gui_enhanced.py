@@ -265,6 +265,12 @@ class MissionStats(QGroupBox):
         self.max_alt_value = 0
         self.max_speed_value = 0
         self.flight_start_time = None
+        # Reset displays to 0
+        self.max_altitude.display(0.00)
+        self.max_speed.display(0.00)
+        self.flight_time.display(0.00)
+        self.descent_rate.display(0.00)
+        self.current_altitude.display(0.00)
         
     def update_stats(self, altitude, speed):
         # Update max values
@@ -278,13 +284,6 @@ class MissionStats(QGroupBox):
         
         # Update current altitude
         self.current_altitude.display(f"{altitude:.2f}")
-        
-        # Update flight time
-        if self.flight_start_time is None:
-            self.flight_start_time = datetime.now()
-        
-        elapsed = (datetime.now() - self.flight_start_time).total_seconds()
-        self.flight_time.display(f"{elapsed:.2f}")
 
 class PreflightChecklist(QGroupBox):
     """Pre-flight system checks"""
@@ -417,6 +416,7 @@ class MainWindow(QMainWindow):
         self.packets_lost = 0
         self.last_packet_time = None
         self.mission_start_time = None
+        self.last_alert_altitude = None  # Track last altitude that triggered alert
 
         # Initialize plots
         self.setup_plots()
@@ -498,8 +498,20 @@ class MainWindow(QMainWindow):
         
         # Logo
         logo_label = QLabel()
-        logo_label.setText("🛰️")
-        logo_label.setStyleSheet("font-size: 48px;")
+        try:
+            logo_pixmap = QPixmap("logo.jpg")
+            if logo_pixmap.isNull():
+                # Image file not found, use emoji fallback
+                logo_label.setText("🛰️")
+                logo_label.setStyleSheet("font-size: 48px;")
+            else:
+                # Image found, display it
+                scaled_logo = logo_pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                logo_label.setPixmap(scaled_logo)
+        except:
+            # If any error, use emoji fallback
+            logo_label.setText("🛰️")
+            logo_label.setStyleSheet("font-size: 48px;")
         
         # Title
         title = QLabel("Parikshit Student Satellite\nCanSat Ground Station")
@@ -712,8 +724,20 @@ class MainWindow(QMainWindow):
                 self.altitudes = np.roll(self.altitudes, -1)
                 self.altitudes[-1] = data[1]
                 
+                # Calculate speed from data or use provided value
+                # data[8], data[9], data[10] are acceleration components
+                # We need to get actual speed - let's use the simulator's speed
+                if hasattr(self.ser, 'simulator'):
+                    actual_speed = self.ser.simulator.get_speed()
+                else:
+                    # Fallback: estimate speed from altitude change
+                    if len(self.altitudes) > 1:
+                        actual_speed = abs(self.altitudes[-1] - self.altitudes[-2]) / 0.5  # 0.5s update interval
+                    else:
+                        actual_speed = 0
+                
                 self.speeds = np.roll(self.speeds, -1)
-                self.speeds[-1] = data[8]
+                self.speeds[-1] = actual_speed
                 
                 self.accelerations = np.roll(self.accelerations, -1)
                 self.accelerations[-1] = np.sqrt(data[8]**2 + data[9]**2 + data[10]**2)
@@ -730,8 +754,9 @@ class MainWindow(QMainWindow):
                 # Update plots
                 self.update_plots()
                 
-                # Update mission stats
-                self.mission_stats.update_stats(data[1], data[8])
+                # Update mission stats only if mission is running
+                if self.mission_start_time:
+                    self.mission_stats.update_stats(data[1], actual_speed)
                 
                 # Update data quality
                 last_time_str = self.last_packet_time.strftime("%H:%M:%S") if self.last_packet_time else "Never"
@@ -743,8 +768,9 @@ class MainWindow(QMainWindow):
                     True
                 )
                 
-                # Check for alerts
-                self.check_alerts(data)
+                # Check for alerts only if mission is running
+                if self.mission_start_time:
+                    self.check_alerts(data)
                 
                 # Update mission phase based on altitude
                 self.update_mission_phase(data[1])
@@ -766,12 +792,19 @@ class MainWindow(QMainWindow):
         """Check for critical conditions and generate alerts"""
         altitude = data[1]
         
-        # Altitude threshold warnings
-        if altitude > 900:
+        # Altitude threshold warnings - only trigger once
+        if altitude > 900 and (self.last_alert_altitude is None or self.last_alert_altitude <= 900):
             self.alerts_panel.add_alert("Approaching maximum altitude!", "WARNING")
+            self.last_alert_altitude = altitude
         
         if altitude < 100 and self.mission_phase.current_phase > 2:
-            self.alerts_panel.add_alert("Low altitude - Landing phase", "INFO")
+            if self.last_alert_altitude is None or self.last_alert_altitude >= 100:
+                self.alerts_panel.add_alert("Low altitude - Landing phase", "INFO")
+                self.last_alert_altitude = altitude
+        
+        # Update last altitude
+        if altitude > 900 or altitude < 100:
+            self.last_alert_altitude = altitude
 
     def update_mission_phase(self, altitude):
         """Automatically update mission phase based on altitude"""
@@ -788,13 +821,18 @@ class MainWindow(QMainWindow):
 
     def start_mission(self):
         self.mission_start_time = datetime.now()
+        self.last_alert_altitude = None  # Reset alert tracking
         self.db.start()
         self.alerts_panel.add_alert("Mission started!", "INFO")
         self.mission_stats.reset_stats()
 
     def stop_mission(self):
+        self.mission_start_time = None  # Stop the timer
+        self.last_alert_altitude = None  # Reset alert tracking
         self.db.stop()
         self.alerts_panel.add_alert("Mission stopped!", "INFO")
+        # Optionally reset phase to pre-launch
+        # self.mission_phase.set_phase(0)
 
     def export_data(self):
         """Export mission data to CSV"""
