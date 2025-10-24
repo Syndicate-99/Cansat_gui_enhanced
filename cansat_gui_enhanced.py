@@ -23,14 +23,14 @@ try:
     SERIAL_AVAILABLE = True
 except ImportError:
     SERIAL_AVAILABLE = False
-    print(" pyserial not installed. Run: pip install pyserial")
+    print("[WARNING] pyserial not installed. Run: pip install pyserial")
 
 class Communication:
     """
     Real Arduino communication class
     Usage: Communication(port='COM3', baudrate=9600)
     """
-    def __init__(self, port='COM3', baudrate=9600, use_simulator=False):
+    def __init__(self, port='COM8', baudrate=9600, use_simulator=False):
         self.connected = False
         self.ser = None
         self.use_simulator = use_simulator
@@ -41,14 +41,14 @@ class Communication:
                 from flight_simulator import FlightSimulator
                 self.simulator = FlightSimulator()
                 self.connected = True
-                print(" Using flight simulator")
+                print("[OK] Using flight simulator")
             except:
-                print("Flight simulator not found, using random data")
+                print("[WARNING] Flight simulator not found, using random data")
                 self.simulator = None
         else:
             # Real serial connection
             if not SERIAL_AVAILABLE:
-                print(" pyserial not installed! Install with: pip install pyserial")
+                print("[ERROR] pyserial not installed! Install with: pip install pyserial")
                 return
             
             try:
@@ -56,11 +56,11 @@ class Communication:
                 import time
                 time.sleep(2)  # Wait for Arduino reset
                 self.connected = True
-                print(f"Connected to {port} at {baudrate} baud")
+                print(f"[OK] Connected to {port} at {baudrate} baud")
             except Exception as e:
                 self.connected = False
-                print(f"Failed to connect to {port}: {e}")
-                print(f"Available ports: {self.list_ports()}")
+                print(f"[ERROR] Failed to connect to {port}: {e}")
+                print(f"   Available ports: {self.list_ports()}")
     
     @staticmethod
     def list_ports():
@@ -107,22 +107,66 @@ class Communication:
     
     def parse_data(self, line):
         """
-        Parse data from Arduino
-        Expected format (CSV): time,alt,temp,press,humid,gx,gy,gz,ax,ay,az,lat,lon
+        Parse YOUR specific 12-field XBee data format:
+        millis, mq7_raw, mq135_raw, ax_mps2, ay_mps2, az_mps2, 
+        gx_rads, gy_rads, gz_rads, pressure_Pa, temp_C, altitude_m
         
-        Modify this function to match YOUR Arduino's data format!
+        Example: 62,188,147,2.49,6.67,-6.49,0.00,0.00436,-0.00218,99143.08,29.92,183.27
+        
+        Returns: [time, altitude, temp, pressure, humidity, gx, gy, gz, ax, ay, az, lat, lon, mq7, mq135]
+                 (15 values total - 13 standard + 2 extra for MQ sensors)
         """
         try:
-            # CSV format
-            parts = line.split(',')
-            if len(parts) >= 11:
-                data = [float(x) for x in parts[:13]]
-                return data
-            else:
-                print(f" Expected 13 values, got {len(parts)}: {line}")
+            # Clean XBee garbage characters
+            import re
+            clean_line = ''.join(char for char in line if ord(char) >= 32 and ord(char) < 127)
+            clean_line = re.sub(r'[▒\x00-\x1F]+', '', clean_line).strip()
+            
+            if not clean_line or ',' not in clean_line:
                 return None
+            
+            # Parse CSV
+            parts = clean_line.split(',')
+            if len(parts) < 12:
+                print(f"[WARNING] Expected 12 values, got {len(parts)}: {clean_line[:60]}...")
+                return None
+            
+            # Extract YOUR sensor values
+            values = [float(p.strip()) for p in parts[:12]]
+            
+            # Map to extended format:
+            # Your format: millis,mq7,mq135,ax,ay,az,gx,gy,gz,pressure_Pa,temp_C,altitude_m
+            # Indices:     0      1   2    3  4  5  6  7  8  9           10      11
+            
+            # Extended format for GUI (15 values):
+            # [time, altitude, temp, pressure, humidity, gx, gy, gz, ax, ay, az, lat, lon, mq7, mq135]
+            
+            import time
+            standard = [
+                time.time(),              # 0: time (current timestamp)
+                values[11],               # 1: altitude_m (field 11) - YOUR REAL DATA
+                values[10],               # 2: temp_C (field 10) - YOUR REAL DATA
+                values[9] / 100.0,        # 3: pressure in hPa (field 9, Pa to hPa) - YOUR REAL DATA
+                50.0,                     # 4: humidity (synthetic - not in your data)
+                values[6],                # 5: gyro_x rad/s (field 6) - YOUR REAL DATA
+                values[7],                # 6: gyro_y rad/s (field 7) - YOUR REAL DATA
+                values[8],                # 7: gyro_z rad/s (field 8) - YOUR REAL DATA
+                values[3],                # 8: accel_x m/s² (field 3) - YOUR REAL DATA
+                values[4],                # 9: accel_y m/s² (field 4) - YOUR REAL DATA
+                values[5],                # 10: accel_z m/s² (field 5) - YOUR REAL DATA
+                13.3379,                  # 11: latitude (synthetic - not in your data)
+                74.7461,                  # 12: longitude (synthetic - not in your data)
+                values[1],                # 13: mq7_raw (field 1) - YOUR REAL DATA
+                values[2]                 # 14: mq135_raw (field 2) - YOUR REAL DATA
+            ]
+            
+            return standard
+            
         except ValueError as e:
-            print(f" Parse error: {e} | Line: {line}")
+            print(f"[WARNING] Parse error: {e}")
+            return None
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {e}")
             return None
     
     def get_speed(self):
@@ -151,7 +195,7 @@ class data_base:
         self.data_log = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.filename = f"cansat_flight_data_{timestamp}.csv"
-        print(f" Started recording to {self.filename}")
+        print(f"[RECORDING] Started recording to {self.filename}")
     
     def stop(self):
         """Stop recording and save data"""
@@ -165,9 +209,9 @@ class data_base:
                     'Latitude', 'Longitude'
                 ])
                 df.to_csv(self.filename, index=False)
-                print(f" Saved {len(self.data_log)} data points to {self.filename}")
+                print(f"[SAVED] Saved {len(self.data_log)} data points to {self.filename}")
             except Exception as e:
-                print(f" Error saving data: {e}")
+                print(f"[ERROR] Error saving data: {e}")
     
     def guardar(self, data):
         """Save data point"""
@@ -544,6 +588,12 @@ class MainWindow(QMainWindow):
         self.gyro_y = np.zeros(self.data_length)
         self.gyro_z = np.zeros(self.data_length)
         
+        # Additional sensor buffers for YOUR data
+        self.temperatures = np.zeros(self.data_length)
+        self.pressures = np.zeros(self.data_length)
+        self.mq7_values = np.zeros(self.data_length)  # CO sensor
+        self.mq135_values = np.zeros(self.data_length)  # Air quality sensor
+        
         # Mission tracking
         self.packets_received = 0
         self.packets_lost = 0
@@ -556,8 +606,9 @@ class MainWindow(QMainWindow):
 
         # Initialize communication and database
         # CHANGE THIS TO USE YOUR COM PORT:
-        # self.ser = Communication(port='COM3', baudrate=9600, use_simulator=False)
-        self.ser = Communication(use_simulator=True)  # Using simulator by default
+        self.ser = Communication(port='COM8', baudrate=9600, use_simulator=False)
+        
+        #self.ser = Communication(use_simulator=True)  # Using simulator by default
         self.db = data_base()
         
         # Serial communication state
@@ -621,14 +672,43 @@ class MainWindow(QMainWindow):
         # Gyroscope plot
         self.gyro_plot = pg.PlotWidget()
         self.gyro_plot.setBackground('#2d2d2d')
-        self.gyro_plot.setTitle("Gyroscope (deg/s)", color='w')
-        self.gyro_plot.setLabel('left', 'Angular Velocity', units='deg/s')
+        self.gyro_plot.setTitle("Gyroscope (rad/s)", color='w')
+        self.gyro_plot.setLabel('left', 'Angular Velocity', units='rad/s')
         self.gyro_plot.setLabel('bottom', 'Time', units='s')
         self.gyro_plot.showGrid(x=True, y=True, alpha=0.3)
         self.gyro_x_line = self.gyro_plot.plot(pen=pg.mkPen(color='r', width=2), name='X')
         self.gyro_y_line = self.gyro_plot.plot(pen=pg.mkPen(color='g', width=2), name='Y')
         self.gyro_z_line = self.gyro_plot.plot(pen=pg.mkPen(color='b', width=2), name='Z')
         self.gyro_plot.addLegend()
+        
+        # NEW: Temperature plot (YOUR REAL DATA)
+        self.temperature_plot = pg.PlotWidget()
+        self.temperature_plot.setBackground('#2d2d2d')
+        self.temperature_plot.setTitle("Temperature (°C)", color='w')
+        self.temperature_plot.setLabel('left', 'Temperature', units='°C')
+        self.temperature_plot.setLabel('bottom', 'Time', units='s')
+        self.temperature_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.temperature_line = self.temperature_plot.plot(pen=pg.mkPen(color='#ff8800', width=2))
+        
+        # NEW: Pressure plot (YOUR REAL DATA)
+        self.pressure_plot = pg.PlotWidget()
+        self.pressure_plot.setBackground('#2d2d2d')
+        self.pressure_plot.setTitle("Pressure (hPa)", color='w')
+        self.pressure_plot.setLabel('left', 'Pressure', units='hPa')
+        self.pressure_plot.setLabel('bottom', 'Time', units='s')
+        self.pressure_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.pressure_line = self.pressure_plot.plot(pen=pg.mkPen(color='#8800ff', width=2))
+        
+        # NEW: Air Quality Sensors plot (YOUR REAL DATA)
+        self.airquality_plot = pg.PlotWidget()
+        self.airquality_plot.setBackground('#2d2d2d')
+        self.airquality_plot.setTitle("Air Quality Sensors", color='w')
+        self.airquality_plot.setLabel('left', 'ADC Value', units='')
+        self.airquality_plot.setLabel('bottom', 'Time', units='s')
+        self.airquality_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.mq7_line = self.airquality_plot.plot(pen=pg.mkPen(color='#ff0000', width=2), name='MQ-7 (CO)')
+        self.mq135_line = self.airquality_plot.plot(pen=pg.mkPen(color='#00ff88', width=2), name='MQ-135 (Air)')
+        self.airquality_plot.addLegend()
 
     def create_header(self):
         header = QWidget()
@@ -712,19 +792,31 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QGridLayout(page)
         
-        # Left column - Graphs
+        # Left column - Graphs (expanded to 3x3 grid for more plots)
         graph_widget = QWidget()
         graph_layout = QGridLayout(graph_widget)
         
-        altitude_card = self.create_graph_card("Altitude (m)", self.altitude_plot)
-        speed_card = self.create_graph_card("Speed (m/s)", self.speed_plot)
-        acceleration_card = self.create_graph_card("Acceleration (m/s²)", self.acceleration_plot)
-        gyro_card = self.create_graph_card("Gyroscope", self.gyro_plot)
+        # Row 1: Altitude, Speed, Temperature (REAL DATA)
+        altitude_card = self.create_graph_card("Altitude (m) - REAL", self.altitude_plot)
+        speed_card = self.create_graph_card("Speed (m/s) - SYNTHETIC", self.speed_plot)
+        temp_card = self.create_graph_card("Temperature (°C) - REAL", self.temperature_plot)
         
+        # Row 2: Acceleration, Gyroscope, Pressure (REAL DATA)
+        acceleration_card = self.create_graph_card("Acceleration (m/s²) - REAL", self.acceleration_plot)
+        gyro_card = self.create_graph_card("Gyroscope (rad/s) - REAL", self.gyro_plot)
+        pressure_card = self.create_graph_card("Pressure (hPa) - REAL", self.pressure_plot)
+        
+        # Row 3: Air Quality Sensors (REAL DATA)
+        airquality_card = self.create_graph_card("Air Quality Sensors - REAL", self.airquality_plot)
+        
+        # Add to grid
         graph_layout.addWidget(altitude_card, 0, 0)
         graph_layout.addWidget(speed_card, 0, 1)
+        graph_layout.addWidget(temp_card, 0, 2)
         graph_layout.addWidget(acceleration_card, 1, 0)
         graph_layout.addWidget(gyro_card, 1, 1)
+        graph_layout.addWidget(pressure_card, 1, 2)
+        graph_layout.addWidget(airquality_card, 2, 0, 1, 3)  # Span 3 columns
         
         # Right column - Info panels
         info_widget = QWidget()
@@ -902,6 +994,22 @@ class MainWindow(QMainWindow):
                 self.gyro_z = np.roll(self.gyro_z, -1)
                 self.gyro_z[-1] = data[7]
                 
+                # NEW: Update temperature data (YOUR REAL DATA)
+                self.temperatures = np.roll(self.temperatures, -1)
+                self.temperatures[-1] = data[2]
+                
+                # NEW: Update pressure data (YOUR REAL DATA)
+                self.pressures = np.roll(self.pressures, -1)
+                self.pressures[-1] = data[3]
+                
+                # NEW: Update MQ sensor data (YOUR REAL DATA) if available
+                if len(data) > 13:  # Extended format with MQ sensors
+                    self.mq7_values = np.roll(self.mq7_values, -1)
+                    self.mq7_values[-1] = data[13]
+                    
+                    self.mq135_values = np.roll(self.mq135_values, -1)
+                    self.mq135_values[-1] = data[14]
+                
                 # Update plots
                 self.update_plots()
                 
@@ -932,12 +1040,19 @@ class MainWindow(QMainWindow):
             print(f"Error updating data: {e}")
 
     def update_plots(self):
+        # Existing plots
         self.altitude_line.setData(self.times, self.altitudes)
         self.speed_line.setData(self.times, self.speeds)
         self.acceleration_line.setData(self.times, self.accelerations)
         self.gyro_x_line.setData(self.times, self.gyro_x)
         self.gyro_y_line.setData(self.times, self.gyro_y)
         self.gyro_z_line.setData(self.times, self.gyro_z)
+        
+        # NEW: Update new sensor plots (YOUR REAL DATA)
+        self.temperature_line.setData(self.times, self.temperatures)
+        self.pressure_line.setData(self.times, self.pressures)
+        self.mq7_line.setData(self.times, self.mq7_values)
+        self.mq135_line.setData(self.times, self.mq135_values)
 
     def check_alerts(self, data):
         """Check for critical conditions and generate alerts"""
@@ -1081,7 +1196,7 @@ MISSION PHASES COMPLETED:
                     font-weight: bold;
                 }
             """)
-            print(" Started listening to COM port")
+            print("[OK] Started listening to COM port")
         else:
             # Stop receiving data
             self.update_timer.stop()
@@ -1097,7 +1212,7 @@ MISSION PHASES COMPLETED:
                     font-weight: bold;
                 }
             """)
-            print(" Stopped listening to COM port")
+            print("[STOPPED] Stopped listening to COM port")
 
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
