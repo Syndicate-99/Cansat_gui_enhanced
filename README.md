@@ -2,7 +2,7 @@
 
 # How to run - connect the sensor to com port ( 8 preferrable) and then run new_gui.py file , it should display the graphs  
 
-For changing the com port number , do it in the new_gui file itself , its the master file , com port can be found using in the device manager 
+For changing the com port number , do it in the new_gui file itself , its the master file , com port can be found using the device manager 
 
 
 ## 📦 What's Included
