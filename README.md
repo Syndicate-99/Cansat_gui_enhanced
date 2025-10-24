@@ -5,6 +5,9 @@
 For changing the com port number , do it in the new_gui file itself , its the master file , com port can be found using the device manager 
 
 
+The com port can be listened using the 'S' button on keyboard 
+
+
 ## 📦 What's Included
 
 1. **cansat_gui_enhanced.py** - Your improved GUI with competition features
