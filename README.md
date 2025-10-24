@@ -1,5 +1,8 @@
 # 🛰️ CanSat Ground Station GUI - Complete Package
 
+
+# ***The graphs shown are only for demonstration purposes and have no real sensor values ***
+
 ## 📦 What's Included
 
 1. **cansat_gui_enhanced.py** - Your improved GUI with competition features
