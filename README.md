@@ -1,5 +1,8 @@
 # 🛰️ CanSat Ground Station GUI - Complete Package
 
+# How to run - connec the sensor to com port ( 8 preferrable) and then run new_hui file , it should display the graphs 
+
+
 ## 📦 What's Included
 
 1. **cansat_gui_enhanced.py** - Your improved GUI with competition features
