@@ -16,30 +16,163 @@ import pandas as pd
 import json
 import os
 
-# Assuming you have these modules (or comment them out if not)
+# Real Arduino Communication Class
 try:
-    from communication import Communication
-    from dataBase import data_base
-except:
-    # Dummy classes if modules don't exist
-    class Communication:
-        def __init__(self):
-            self.connected = False
-        def getData(self):
-            import random
-            return [datetime.now().timestamp(), random.uniform(0, 1000), 0, 0, 0, 
-                    random.uniform(-180, 180), random.uniform(-180, 180), random.uniform(-180, 180),
-                    random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-10, 10)]
+    import serial
+    import serial.tools.list_ports
+    SERIAL_AVAILABLE = True
+except ImportError:
+    SERIAL_AVAILABLE = False
+    print(" pyserial not installed. Run: pip install pyserial")
+
+class Communication:
+    """
+    Real Arduino communication class
+    Usage: Communication(port='COM3', baudrate=9600)
+    """
+    def __init__(self, port='COM3', baudrate=9600, use_simulator=False):
+        self.connected = False
+        self.ser = None
+        self.use_simulator = use_simulator
+        
+        if use_simulator:
+            # Use simulator for testing
+            try:
+                from flight_simulator import FlightSimulator
+                self.simulator = FlightSimulator()
+                self.connected = True
+                print(" Using flight simulator")
+            except:
+                print("Flight simulator not found, using random data")
+                self.simulator = None
+        else:
+            # Real serial connection
+            if not SERIAL_AVAILABLE:
+                print(" pyserial not installed! Install with: pip install pyserial")
+                return
+            
+            try:
+                self.ser = serial.Serial(port, baudrate, timeout=1)
+                import time
+                time.sleep(2)  # Wait for Arduino reset
+                self.connected = True
+                print(f"Connected to {port} at {baudrate} baud")
+            except Exception as e:
+                self.connected = False
+                print(f"Failed to connect to {port}: {e}")
+                print(f"Available ports: {self.list_ports()}")
     
-    class data_base:
-        def __init__(self):
-            self.recording = False
-        def start(self):
-            self.recording = True
-        def stop(self):
-            self.recording = False
-        def guardar(self, data):
-            pass
+    @staticmethod
+    def list_ports():
+        """List all available COM ports"""
+        if SERIAL_AVAILABLE:
+            ports = serial.tools.list_ports.comports()
+            return [port.device for port in ports]
+        return []
+    
+    def getData(self):
+        """Get data from Arduino or simulator"""
+        if self.use_simulator:
+            # Use flight simulator
+            if hasattr(self, 'simulator') and self.simulator:
+                import time
+                if not hasattr(self, 'last_update'):
+                    self.last_update = time.time()
+                current_time = time.time()
+                dt = current_time - self.last_update
+                self.last_update = current_time
+                return self.simulator.update(dt * 2)  # 2x speed
+            else:
+                # Random data fallback
+                import random
+                return [datetime.now().timestamp(), random.uniform(0, 1000), 0, 0, 0, 
+                        random.uniform(-180, 180), random.uniform(-180, 180), random.uniform(-180, 180),
+                        random.uniform(-10, 10), random.uniform(-10, 10), random.uniform(-10, 10)]
+        
+        # Real Arduino data
+        if not self.connected or self.ser is None:
+            return None
+        
+        try:
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    # Parse the data
+                    data = self.parse_data(line)
+                    return data
+            return None
+        except Exception as e:
+            print(f"Error reading serial: {e}")
+            return None
+    
+    def parse_data(self, line):
+        """
+        Parse data from Arduino
+        Expected format (CSV): time,alt,temp,press,humid,gx,gy,gz,ax,ay,az,lat,lon
+        
+        Modify this function to match YOUR Arduino's data format!
+        """
+        try:
+            # CSV format
+            parts = line.split(',')
+            if len(parts) >= 11:
+                data = [float(x) for x in parts[:13]]
+                return data
+            else:
+                print(f" Expected 13 values, got {len(parts)}: {line}")
+                return None
+        except ValueError as e:
+            print(f" Parse error: {e} | Line: {line}")
+            return None
+    
+    def get_speed(self):
+        """Get current speed from simulator"""
+        if hasattr(self, 'simulator') and self.simulator:
+            return self.simulator.get_speed()
+        return 0
+    
+    def close(self):
+        """Close serial connection"""
+        if self.ser:
+            self.ser.close()
+            print("Serial connection closed")
+
+
+class data_base:
+    """Database class for recording flight data"""
+    def __init__(self):
+        self.recording = False
+        self.data_log = []
+        self.filename = None
+    
+    def start(self):
+        """Start recording data"""
+        self.recording = True
+        self.data_log = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.filename = f"cansat_flight_data_{timestamp}.csv"
+        print(f" Started recording to {self.filename}")
+    
+    def stop(self):
+        """Stop recording and save data"""
+        self.recording = False
+        if self.data_log and self.filename:
+            try:
+                df = pd.DataFrame(self.data_log, columns=[
+                    'Time', 'Altitude', 'Temperature', 'Pressure', 'Humidity',
+                    'Gyro_X', 'Gyro_Y', 'Gyro_Z',
+                    'Accel_X', 'Accel_Y', 'Accel_Z',
+                    'Latitude', 'Longitude'
+                ])
+                df.to_csv(self.filename, index=False)
+                print(f" Saved {len(self.data_log)} data points to {self.filename}")
+            except Exception as e:
+                print(f" Error saving data: {e}")
+    
+    def guardar(self, data):
+        """Save data point"""
+        if self.recording and data:
+            self.data_log.append(data)
 
 # Set dark theme for pyqtgraph
 pg.setConfigOption('background', '#1e1e1e')
@@ -416,14 +549,19 @@ class MainWindow(QMainWindow):
         self.packets_lost = 0
         self.last_packet_time = None
         self.mission_start_time = None
-        self.last_alert_altitude = None  # Track last altitude that triggered alert
+        self.last_alert_altitude = None
 
         # Initialize plots
         self.setup_plots()
 
         # Initialize communication and database
-        self.ser = Communication()
+        # CHANGE THIS TO USE YOUR COM PORT:
+        # self.ser = Communication(port='COM3', baudrate=9600, use_simulator=False)
+        self.ser = Communication(use_simulator=True)  # Using simulator by default
         self.db = data_base()
+        
+        # Serial communication state
+        self.serial_active = True  # Start with serial ON
         
         # Create main widget and layout
         main_widget = QWidget()
@@ -499,17 +637,14 @@ class MainWindow(QMainWindow):
         # Logo
         logo_label = QLabel()
         try:
-            logo_pixmap = QPixmap("logo.jpg")
+            logo_pixmap = QPixmap("logo1.jpg")
             if logo_pixmap.isNull():
-                # Image file not found, use emoji fallback
                 logo_label.setText("🛰️")
                 logo_label.setStyleSheet("font-size: 48px;")
             else:
-                # Image found, display it
                 scaled_logo = logo_pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 logo_label.setPixmap(scaled_logo)
         except:
-            # If any error, use emoji fallback
             logo_label.setText("🛰️")
             logo_label.setStyleSheet("font-size: 48px;")
         
@@ -520,6 +655,18 @@ class MainWindow(QMainWindow):
             font-weight: bold;
             color: white;
             margin: 10px;
+        """)
+        
+        # Serial status indicator
+        self.serial_status = QLabel("🟢 Serial ON")
+        self.serial_status.setStyleSheet("""
+            QLabel {
+                background-color: #00ff00;
+                color: black;
+                padding: 5px 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
         """)
         
         # Mission timer
@@ -537,6 +684,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(logo_label)
         header_layout.addWidget(title)
         header_layout.addStretch()
+        header_layout.addWidget(self.serial_status)
         header_layout.addWidget(QLabel("Mission Time:"))
         header_layout.addWidget(self.mission_timer)
         
@@ -602,6 +750,10 @@ class MainWindow(QMainWindow):
         stop_btn = ModernButton("⏹ Stop Mission")
         export_btn = ModernButton("💾 Export Data")
         
+        # Add keyboard hint
+        keyboard_hint = QLabel("💡 Press 'S' to toggle serial ON/OFF")
+        keyboard_hint.setStyleSheet("color: #ffff00; font-size: 11px; padding: 5px;")
+        
         start_btn.clicked.connect(self.start_mission)
         stop_btn.clicked.connect(self.stop_mission)
         export_btn.clicked.connect(self.export_data)
@@ -609,6 +761,7 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(start_btn)
         control_layout.addWidget(stop_btn)
         control_layout.addWidget(export_btn)
+        control_layout.addWidget(keyboard_hint)
         
         info_layout.addWidget(control_card)
         info_layout.addStretch()
@@ -697,7 +850,7 @@ class MainWindow(QMainWindow):
         # Update timer for sensor data
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_data)
-        self.update_timer.start(500)
+        self.update_timer.start(500)  # Starts automatically
         
         # Mission timer update
         self.mission_timer_update = QTimer()
@@ -725,14 +878,12 @@ class MainWindow(QMainWindow):
                 self.altitudes[-1] = data[1]
                 
                 # Calculate speed from data or use provided value
-                # data[8], data[9], data[10] are acceleration components
-                # We need to get actual speed - let's use the simulator's speed
                 if hasattr(self.ser, 'simulator'):
                     actual_speed = self.ser.simulator.get_speed()
                 else:
                     # Fallback: estimate speed from altitude change
                     if len(self.altitudes) > 1:
-                        actual_speed = abs(self.altitudes[-1] - self.altitudes[-2]) / 0.5  # 0.5s update interval
+                        actual_speed = abs(self.altitudes[-1] - self.altitudes[-2]) / 0.5
                     else:
                         actual_speed = 0
                 
@@ -764,7 +915,7 @@ class MainWindow(QMainWindow):
                     self.packets_received,
                     self.packets_lost,
                     last_time_str,
-                    100,  # Mock data rate
+                    100,
                     True
                 )
                 
@@ -821,18 +972,16 @@ class MainWindow(QMainWindow):
 
     def start_mission(self):
         self.mission_start_time = datetime.now()
-        self.last_alert_altitude = None  # Reset alert tracking
+        self.last_alert_altitude = None
         self.db.start()
         self.alerts_panel.add_alert("Mission started!", "INFO")
         self.mission_stats.reset_stats()
 
     def stop_mission(self):
-        self.mission_start_time = None  # Stop the timer
-        self.last_alert_altitude = None  # Reset alert tracking
+        self.mission_start_time = None
+        self.last_alert_altitude = None
         self.db.stop()
         self.alerts_panel.add_alert("Mission stopped!", "INFO")
-        # Optionally reset phase to pre-launch
-        # self.mission_phase.set_phase(0)
 
     def export_data(self):
         """Export mission data to CSV"""
@@ -855,7 +1004,7 @@ class MainWindow(QMainWindow):
                     'Gyro_Z': self.gyro_z
                 })
                 df.to_csv(filename, index=False)
-                self.alerts_panel.add_alert(f"Data exported to {filename}", "INFO")
+                self.alerts_panel.add_alert(f"Data exported successfully!", "INFO")
             except Exception as e:
                 self.alerts_panel.add_alert(f"Export failed: {str(e)}", "CRITICAL")
 
@@ -888,7 +1037,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 MISSION STATISTICS:
 - Maximum Altitude: {self.mission_stats.max_alt_value:.2f} m
 - Maximum Speed: {self.mission_stats.max_speed_value:.2f} m/s
-- Total Flight Time: {self.mission_stats.flight_time.value():.2f} s
+- Total Flight Time: {self.mission_timer.value():.2f} s
 
 DATA QUALITY:
 - Packets Received: {self.packets_received}
@@ -905,6 +1054,50 @@ MISSION PHASES COMPLETED:
 ==================================
         """
         self.results_text.setText(report)
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts"""
+        if event.key() == Qt.Key_S:
+            self.toggle_serial_communication()
+        elif event.key() == Qt.Key_Space:
+            self.toggle_serial_communication()
+
+    def toggle_serial_communication(self):
+        """Toggle serial data reception on/off"""
+        self.serial_active = not self.serial_active
+        
+        if self.serial_active:
+            # Start receiving data
+            self.update_timer.start(500)
+            self.alerts_panel.add_alert("Serial STARTED (Press S to stop)", "INFO")
+            # Update visual indicator
+            self.serial_status.setText("🟢 Serial ON")
+            self.serial_status.setStyleSheet("""
+                QLabel {
+                    background-color: #00ff00;
+                    color: black;
+                    padding: 5px 10px;
+                    border-radius: 5px;
+                    font-weight: bold;
+                }
+            """)
+            print(" Started listening to COM port")
+        else:
+            # Stop receiving data
+            self.update_timer.stop()
+            self.alerts_panel.add_alert("Serial STOPPED (Press S to start)", "WARNING")
+            # Update visual indicator
+            self.serial_status.setText("🔴 Serial OFF")
+            self.serial_status.setStyleSheet("""
+                QLabel {
+                    background-color: #ff0000;
+                    color: white;
+                    padding: 5px 10px;
+                    border-radius: 5px;
+                    font-weight: bold;
+                }
+            """)
+            print(" Stopped listening to COM port")
 
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)

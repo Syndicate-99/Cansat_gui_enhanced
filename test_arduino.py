@@ -10,7 +10,7 @@ print(f"Connecting to {PORT}...")
 try:
     ser = serial.Serial(PORT, BAUD_RATE, timeout=1)
     time.sleep(2)  # Wait for Arduino reset
-    print("✅ Connected!")
+    print(" Connected!")
     print("\nReading data (press Ctrl+C to stop):\n")
     
     while True:
@@ -22,4 +22,5 @@ except KeyboardInterrupt:
     print("\n\nStopped by user")
     ser.close()
 except Exception as e:
-    print(f"❌ Error: {e}")
+    print(f" Error: {e}")
+    
